@@ -17,7 +17,8 @@ use lapin::channel::{BasicConsumeOptions, BasicProperties, BasicPublishOptions, 
 
 #[test]
 fn connection() {
-    env_logger::init();
+    // Ignore error initializing logger; other tests might have done it already.
+    let _ = env_logger::try_init();
     let mut core = Core::new().unwrap();
 
     let handle = core.handle();
@@ -117,7 +118,8 @@ fn consumer_not_ready_polls_again() {
     use tokio_core::reactor::Timeout;
     use std::time::Duration;
 
-    env_logger::init();
+    // Ignore error initializing logger; other tests might have done it already.
+    let _ = env_logger::try_init();
     let mut core = Core::new().unwrap();
 
     let handle = core.handle();
