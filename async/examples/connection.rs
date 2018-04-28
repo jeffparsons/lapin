@@ -11,7 +11,7 @@ use lapin::buffer::Buffer;
 use lapin::generated::basic;
 
 fn main() {
-      env_logger::init().unwrap();
+      env_logger::init();
       let mut stream = TcpStream::connect("127.0.0.1:5672").unwrap();
       stream.set_nonblocking(true).unwrap();
 
@@ -83,7 +83,7 @@ fn main() {
       info!("[{}] state: {:?}", line!(), conn.run(&mut stream, &mut send_buffer, &mut receive_buffer).unwrap());
       thread::sleep(time::Duration::from_millis(100));
       info!("[{}] state: {:?}", line!(), conn.run(&mut stream, &mut send_buffer, &mut receive_buffer).unwrap());
-      info!("received message: {:?}", conn.next_message(channel_b, "hello", "my_consumer").unwrap());
+      info!("received message: {:?}", conn.next_delivery(channel_b, "hello", "my_consumer").unwrap());
       panic!();
 }
 

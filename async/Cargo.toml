@@ -1,7 +1,7 @@
 [package]
 name = "lapin-async"
-version = "0.10.0"
-authors = ["Geoffroy Couprie <geo.couprie@gmail.com>"]
+version = "0.11.1"
+authors = ["Geoffroy Couprie <geo.couprie@gmail.com>", "Marc-Antoine Perennou <Marc-Antoine@Perennou.com>"]
 description = "AMQP client library with a low level API designed for use with mio"
 repository = "https://github.com/Geal/lapin"
 readme = "README.md"
@@ -12,7 +12,7 @@ license = "MIT"
 build = "build.rs"
 
 [dependencies]
-log = "^0.3"
+log = "^0.4"
 nom = "^3.0"
 cookie-factory = "^0.2"
 amq-protocol = "^0.19"
@@ -25,7 +25,7 @@ default-features = false
 amq-protocol = "^0.19"
 
 [dev-dependencies]
-env_logger = "^0.4"
+env_logger = "^0.5"
 
 [features]
 default = []

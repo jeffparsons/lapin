@@ -11,7 +11,7 @@ use cookie_factory::GenError;
 use format::frame::*;
 use format::content::*;
 use channel::Channel;
-use queue::Message;
+use message::*;
 use api::{Answer,ChannelState,RequestId};
 use generated::*;
 use types::{AMQPValue,FieldTable};
@@ -236,20 +236,20 @@ impl Connection {
   ///
   /// if the channel id, queue and consumer tag have no link, the method
   /// will return None. If there is no message, the method will return None
-  pub fn next_message(&mut self, channel_id: u16, queue_name: &str, consumer_tag: &str) -> Option<Message> {
+  pub fn next_delivery(&mut self, channel_id: u16, queue_name: &str, consumer_tag: &str) -> Option<Delivery> {
     self.channels.get_mut(&channel_id)
       .and_then(|channel| channel.queues.get_mut(queue_name))
-      .and_then(|queue| queue.next_message(Some(consumer_tag)))
+      .and_then(|queue| queue.next_delivery(consumer_tag))
   }
 
   /// gets the next message corresponding to a channel and queue, in response to a basic.get
   ///
   /// if the channel id and queue have no link, the method
   /// will return None. If there is no message, the method will return None
-  pub fn next_get_message(&mut self, channel_id: u16, queue_name: &str) -> Option<Message> {
+  pub fn next_basic_get_message(&mut self, channel_id: u16, queue_name: &str) -> Option<BasicGetMessage> {
     self.channels.get_mut(&channel_id)
       .and_then(|channel| channel.queues.get_mut(queue_name))
-      .and_then(|queue| queue.next_message(None))
+      .and_then(|queue| queue.next_basic_get_message())
   }
 
   /// starts the process of connecting to the server
@@ -541,18 +541,30 @@ impl Connection {
       channel.state.clone()
     }).unwrap();
     if let ChannelState::WillReceiveContent(queue_name, consumer_tag) = state {
-      self.set_channel_state(channel_id, ChannelState::ReceivingContent(queue_name.clone(), consumer_tag.clone(), size as usize));
+      if size > 0 {
+        self.set_channel_state(channel_id, ChannelState::ReceivingContent(queue_name.clone(), consumer_tag.clone(), size as usize));
+      } else {
+        self.set_channel_state(channel_id, ChannelState::Connected);
+      }
       if let Some(ref mut c) = self.channels.get_mut(&channel_id) {
         if let Some(ref mut q) = c.queues.get_mut(&queue_name) {
           if let Some(ref consumer_tag) = consumer_tag {
             if let Some(ref mut cs) = q.consumers.get_mut(consumer_tag) {
-              if let Some(mut msg) = cs.current_message.as_mut() {
+              if let Some(msg) = cs.current_message.as_mut() {
                 msg.properties = properties;
+              }
+              if size == 0 {
+                let message = cs.current_message.take().expect("there should be an in flight message in the consumer");
+                cs.messages.push_back(message);
               }
             }
           } else {
-            if let Some(mut msg) = q.current_get_message.as_mut() {
-              msg.properties = properties;
+            if let Some(msg) = q.current_get_message.as_mut() {
+              msg.delivery.properties = properties;
+            }
+            if size == 0 {
+              let message = q.current_get_message.take().expect("there should be an in flight message in the queue");
+              q.get_messages.push_back(message);
             }
           }
         }
@@ -583,7 +595,7 @@ impl Connection {
                 }
               }
             } else {
-              q.current_get_message.as_mut().map(|msg| msg.receive_content(payload));
+              q.current_get_message.as_mut().map(|msg| msg.delivery.receive_content(payload));
               if remaining_size == payload_size {
                 let message = q.current_get_message.take().expect("there should be an in flight message in the queue");
                 q.get_messages.push_back(message);
@@ -630,4 +642,162 @@ impl Connection {
     self.frame_queue.push_back(Frame::Method(channel,method));
     Ok(())
   }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_consume_small_payload() {
+        use queue::{Consumer, Queue};
+
+        // Bootstrap connection state to a consuming state
+        let mut conn = Connection::new();
+        conn.state = ConnectionState::Connected;
+        let channel_id = conn.create_channel();
+        conn.set_channel_state(channel_id, ChannelState::Connected);
+        let queue_name = "consumed".to_string();
+        let mut queue = Queue::new(queue_name.clone(), false, false, false, false);
+        queue.created = true;
+        let consumer_tag = "consumer-tag".to_string();
+        let consumer = Consumer {
+            tag: consumer_tag.clone(),
+            no_local: false,
+            no_ack: false,
+            exclusive: false,
+            nowait: false,
+            current_message: None,
+            messages: VecDeque::new(),
+        };
+        queue.consumers.insert(consumer_tag.clone(), consumer);
+        conn.channels.get_mut(&channel_id).map(|c| {
+            c.queues.insert(queue_name.clone(), queue);
+        });
+        // Now test the state machine behaviour
+        {
+            let deliver_frame = Frame::Method(
+                channel_id,
+                Class::Basic(
+                    basic::Methods::Deliver(
+                        basic::Deliver {
+                            consumer_tag: consumer_tag.clone(),
+                            delivery_tag: 1,
+                            redelivered: false,
+                            exchange: "".to_string(),
+                            routing_key: queue_name.clone(),
+                        }
+                    )
+                )
+            );
+            conn.handle_frame(deliver_frame).unwrap();
+            let channel_state = conn.channels.get_mut(&channel_id)
+                .map(|channel| channel.state.clone())
+                .unwrap();
+            let expected_state = ChannelState::WillReceiveContent(
+                queue_name.clone(),
+                Some(consumer_tag.clone())
+            );
+            assert_eq!(channel_state, expected_state);
+        }
+        {
+            let header_frame = Frame::Header(
+                channel_id,
+                60,
+                ContentHeader {
+                    class_id: 60,
+                    weight: 0,
+                    body_size: 2,
+                    properties: basic::Properties::default(),
+                }
+            );
+            conn.handle_frame(header_frame).unwrap();
+            let channel_state = conn.channels.get_mut(&channel_id)
+                .map(|channel| channel.state.clone())
+                .unwrap();
+            let expected_state = ChannelState::ReceivingContent(queue_name.clone(), Some(consumer_tag.clone()), 2);
+            assert_eq!(channel_state, expected_state);
+        }
+        {
+           let body_frame = Frame::Body(channel_id, "{}".as_bytes().to_vec());
+           conn.handle_frame(body_frame).unwrap();
+            let channel_state = conn.channels.get_mut(&channel_id)
+                .map(|channel| channel.state.clone())
+                .unwrap();
+            let expected_state = ChannelState::Connected;
+            assert_eq!(channel_state, expected_state);
+        }
+    }
+
+    #[test]
+    fn basic_consume_empty_payload() {
+        use queue::{Consumer, Queue};
+
+        // Bootstrap connection state to a consuming state
+        let mut conn = Connection::new();
+        conn.state = ConnectionState::Connected;
+        let channel_id = conn.create_channel();
+        conn.set_channel_state(channel_id, ChannelState::Connected);
+        let queue_name = "consumed".to_string();
+        let mut queue = Queue::new(queue_name.clone(), false, false, false, false);
+        queue.created = true;
+        let consumer_tag = "consumer-tag".to_string();
+        let consumer = Consumer {
+            tag: consumer_tag.clone(),
+            no_local: false,
+            no_ack: false,
+            exclusive: false,
+            nowait: false,
+            current_message: None,
+            messages: VecDeque::new(),
+        };
+        queue.consumers.insert(consumer_tag.clone(), consumer);
+        conn.channels.get_mut(&channel_id).map(|c| {
+            c.queues.insert(queue_name.clone(), queue);
+        });
+        // Now test the state machine behaviour
+        {
+            let deliver_frame = Frame::Method(
+                channel_id,
+                Class::Basic(
+                    basic::Methods::Deliver(
+                        basic::Deliver {
+                            consumer_tag: consumer_tag.clone(),
+                            delivery_tag: 1,
+                            redelivered: false,
+                            exchange: "".to_string(),
+                            routing_key: queue_name.clone(),
+                        }
+                    )
+                )
+            );
+            conn.handle_frame(deliver_frame).unwrap();
+            let channel_state = conn.channels.get_mut(&channel_id)
+                .map(|channel| channel.state.clone())
+                .unwrap();
+            let expected_state = ChannelState::WillReceiveContent(
+                queue_name.clone(),
+                Some(consumer_tag.clone())
+            );
+            assert_eq!(channel_state, expected_state);
+        }
+        {
+            let header_frame = Frame::Header(
+                channel_id,
+                60,
+                ContentHeader {
+                    class_id: 60,
+                    weight: 0,
+                    body_size: 0,
+                    properties: basic::Properties::default(),
+                }
+            );
+            conn.handle_frame(header_frame).unwrap();
+            let channel_state = conn.channels.get_mut(&channel_id)
+                .map(|channel| channel.state.clone())
+                .unwrap();
+            let expected_state = ChannelState::Connected;
+            assert_eq!(channel_state, expected_state);
+        }
+    }
 }

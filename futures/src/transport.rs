@@ -109,13 +109,13 @@ pub struct AMQPTransport<T> {
 
 impl<T> AMQPTransport<T>
    where T: AsyncRead+AsyncWrite,
-         T: Sync+Send,
+         T: Send,
          T: 'static               {
 
   /// starts the connection process
   ///
   /// returns a future of a `AMQPTransport` that is connected
-  pub fn connect(stream: T, options: &ConnectionOptions) -> Box<Future<Item = AMQPTransport<T>, Error = io::Error>> {
+  pub fn connect(stream: T, options: &ConnectionOptions) -> Box<Future<Item = AMQPTransport<T>, Error = io::Error> + Send> {
     let mut conn = Connection::new();
     conn.set_credentials(&options.username, &options.password);
     conn.set_vhost(&options.vhost);
@@ -206,7 +206,7 @@ pub struct AMQPTransportConnector<T> {
 
 impl<T> Future for AMQPTransportConnector<T>
     where T: AsyncRead + AsyncWrite,
-          T: Sync+Send,
+          T: Send,
           T: 'static {
 
   type Item  = AMQPTransport<T>;
@@ -250,7 +250,7 @@ impl<T> Future for AMQPTransportConnector<T>
 
 impl<T> Stream for AMQPTransport<T>
     where T: AsyncRead + AsyncWrite,
-          T: Sync+Send,
+          T: Send,
           T: 'static {
     type Item = ();
     type Error = io::Error;
@@ -286,7 +286,7 @@ impl<T> Stream for AMQPTransport<T>
 
 impl<T> Sink for AMQPTransport<T>
     where T: AsyncWrite,
-          T: Sync+Send {
+          T: Send {
     type SinkItem = Frame;
     type SinkError = io::Error;
 

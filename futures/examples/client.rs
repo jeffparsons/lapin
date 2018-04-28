@@ -11,10 +11,9 @@ use tokio_core::net::TcpStream;
 use lapin::types::FieldTable;
 use lapin::client::ConnectionOptions;
 use lapin::channel::{BasicConsumeOptions,BasicGetOptions,BasicPublishOptions,BasicProperties,ConfirmSelectOptions,ExchangeBindOptions,ExchangeUnbindOptions,ExchangeDeclareOptions,ExchangeDeleteOptions,QueueBindOptions,QueueDeclareOptions};
-use std::thread;
 
 fn main() {
-  env_logger::init().unwrap();
+  env_logger::init();
   let mut core = Core::new().unwrap();
 
   let handle = core.handle();
@@ -26,11 +25,8 @@ fn main() {
         frame_max: 65535,
         ..Default::default()
       })
-    }).and_then(|(client, heartbeat_future_fn)| {
-      let heartbeat_client = client.clone();
-      thread::Builder::new().name("heartbeat thread".to_string()).spawn(move || {
-        Core::new().unwrap().run(heartbeat_future_fn(&heartbeat_client)).unwrap();
-      }).unwrap();
+    }).and_then(|(client, heartbeat)| {
+      handle.spawn(heartbeat.map_err(|e| println!("{:?}", e)));
 
       client.create_confirm_channel(ConfirmSelectOptions::default()).and_then(|channel| {
         let id = channel.id;
@@ -74,8 +70,8 @@ fn main() {
           let ch = channel.clone();
           channel.basic_get("hello", &BasicGetOptions::default()).and_then(move |message| {
             info!("got message: {:?}", message);
-            info!("decoded message: {:?}", std::str::from_utf8(&message.data).unwrap());
-            channel.basic_ack(message.delivery_tag)
+            info!("decoded message: {:?}", std::str::from_utf8(&message.delivery.data).unwrap());
+            channel.basic_ack(message.delivery.delivery_tag)
           }).and_then(move |_| {
             ch.basic_consume("hello", "my_consumer", &BasicConsumeOptions::default(), &FieldTable::new())
           })
